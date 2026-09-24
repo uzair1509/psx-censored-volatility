@@ -1,0 +1,10 @@
+item,value
+listed instruments,1028.0
+equities after type/sector filters,659.0
+with data,652.0
+final sample (liquidity + pref filters),468.0
+stock-days (final),860893.0
+median days per stock,2005.0
+median censoring rate,0.0479
+median share of floor-bound days,0.0406
+median breaches per stock,2.0
