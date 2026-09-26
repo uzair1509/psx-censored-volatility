@@ -23,7 +23,7 @@ from scipy.optimize import minimize
 from scipy.special import stdtr, gammaln
 from scipy.stats import t as tdist
 
-from src.fit_garch import garch_variance_path, prep, filtered_symbols
+from src.fit_garch import garch_variance_path, garch_variance_path_breach, prep, filtered_symbols
 
 X0 = np.array([1e-4, 0.10, 0.85, 8.0])
 OPTS = dict(method="Nelder-Mead", options={"maxiter": 6000, "xatol": 1e-7, "fatol": 1e-6})
@@ -39,18 +39,20 @@ def _scale(sig, nu):
     return sig * math.sqrt((nu - 2) / nu) if np.isscalar(sig) else sig * np.sqrt((nu - 2) / nu)
 
 
-def naive_t_nll(p, r, use):
+def naive_t_nll(p, r, use, breach=None):
     if not _valid(p):
         return 1e10
-    s = _scale(np.sqrt(garch_variance_path(r, *p[:3])), p[3])
+    path = garch_variance_path(r, *p[:3]) if breach is None else garch_variance_path_breach(r, *p[:3], breach)
+    s = _scale(np.sqrt(path), p[3])
     return -tdist.logpdf(r[use], p[3], scale=s[use]).sum()
 
 
-def partial_t_nll(p, r, ru, rl, up, lo, use):
+def partial_t_nll(p, r, ru, rl, up, lo, use, breach=None):
     if not _valid(p):
         return 1e10
     nu = p[3]
-    s = _scale(np.sqrt(garch_variance_path(r, *p[:3])), nu)
+    path = garch_variance_path(r, *p[:3]) if breach is None else garch_variance_path_breach(r, *p[:3], breach)
+    s = _scale(np.sqrt(path), nu)
     mid = use & ~up & ~lo
     ll = tdist.logpdf(r[mid], nu, scale=s[mid]).sum()
     ll += tdist.logsf(ru[up & use] / s[up & use], nu).sum()
@@ -93,12 +95,13 @@ def latent_t_nll(p, r, ru, rl, up, lo, use):
 
 def fit_one_t(sym, g):
     try:
-        r, ru, rl, up, lo, use = prep(g)
-        args = (r, ru, rl, up, lo, use)
-        n = minimize(naive_t_nll, X0, args=(r, use), **OPTS)
+        r, ru, rl, up, lo, use, breach = prep(g)
+        c_args = (r, ru, rl, up, lo, use, breach)
+        L_args = (r, ru, rl, up, lo, use)
+        n = minimize(naive_t_nll, X0, args=(r, use, breach), **OPTS)
         starts = [n.x, X0] if _valid(n.x) else [X0]
-        c = min((minimize(partial_t_nll, s, args=args, **OPTS) for s in starts), key=lambda z: z.fun)
-        L = min((minimize(latent_t_nll, s, args=args, **OPTS) for s in starts), key=lambda z: z.fun)
+        c = min((minimize(partial_t_nll, s, args=c_args, **OPTS) for s in starts), key=lambda z: z.fun)
+        L = min((minimize(latent_t_nll, s, args=L_args, **OPTS) for s in starts), key=lambda z: z.fun)
         return {
             "symbol": sym, "n": int(use.sum()), "censor_rate": float((up | lo)[use].mean()),
             "alpha_n": n.x[1], "beta_n": n.x[2], "nu_n": n.x[3], "ok_n": bool(n.success),

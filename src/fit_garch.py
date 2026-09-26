@@ -42,11 +42,39 @@ OPTS = dict(method="Nelder-Mead", options={"maxiter": 4000, "xatol": 1e-7, "fato
 
 
 def garch_variance_path(r, omega, alpha, beta):
-    """sigma2[t] = omega + alpha*r[t-1]^2 + beta*sigma2[t-1], sigma2[0] = var(r)."""
+    """sigma2[t] = omega + alpha*r[t-1]^2 + beta*sigma2[t-1], sigma2[0] = var(r).
+    Fast path for series with NO breach days. Use garch_variance_path_breach
+    when a breach mask needs to be honored (see that function for why)."""
     s0 = np.var(r)
     x = omega + alpha * r[:-1] ** 2
     y = lfilter([1.0], [1.0, -beta], x, zi=[beta * s0])[0]
     return np.concatenate(([s0], y))
+
+
+@njit(cache=True)
+def _variance_path_breach_loop(w, a, b, r, breach):
+    """Same recursion as garch_variance_path, but on a breach day the shock
+    fed forward is the model's OWN current variance forecast (e2 = s2), not
+    the raw (possibly huge, spurious) r^2, and not 0. This is the same
+    'no information -> carry the forecast forward' rule the latent/MT model
+    already uses (see _latent_nll's `e2 = s2` branch), so naive/partial and
+    latent are now comparable on breach days instead of using two different,
+    silently inconsistent conventions."""
+    n = len(r)
+    s2 = np.empty(n)
+    s2[0] = np.var(r)
+    for t in range(1, n):
+        e2 = s2[t - 1] if breach[t - 1] else r[t - 1] * r[t - 1]
+        s2[t] = w + a * e2 + b * s2[t - 1]
+    return s2
+
+
+def garch_variance_path_breach(r, omega, alpha, beta, breach):
+    """Breach-aware variance path. Falls back to the fast lfilter path when
+    there are no breach days in the series (the common case)."""
+    if not breach[:-1].any():
+        return garch_variance_path(r, omega, alpha, beta)
+    return _variance_path_breach_loop(omega, alpha, beta, r, breach)
 
 
 def _valid(p):
@@ -54,17 +82,23 @@ def _valid(p):
     return w > 0 and a >= 0 and b >= 0 and a + b < 1
 
 
-def naive_nll(p, r, use):
+def naive_nll(p, r, use, breach=None):
     if not _valid(p):
         return 1e10
-    s = np.sqrt(garch_variance_path(r, *p))
+    if breach is None:
+        s = np.sqrt(garch_variance_path(r, *p))
+    else:
+        s = np.sqrt(garch_variance_path_breach(r, *p, breach))
     return -norm.logpdf(r[use], scale=s[use]).sum()
 
 
-def censored_nll(p, r, r_up, r_lo, up, lo, use):
+def censored_nll(p, r, r_up, r_lo, up, lo, use, breach=None):
     if not _valid(p):
         return 1e10
-    s = np.sqrt(garch_variance_path(r, *p))
+    if breach is None:
+        s = np.sqrt(garch_variance_path(r, *p))
+    else:
+        s = np.sqrt(garch_variance_path_breach(r, *p, breach))
     mid = use & ~up & ~lo
     ll = norm.logpdf(r[mid], scale=s[mid]).sum()
     ll += norm.logsf(r_up[up & use] / s[up & use]).sum()   # P(latent >= upper)
@@ -112,18 +146,23 @@ def prep(g: pd.DataFrame):
     r_lo = np.log(g["lower"] / prev).to_numpy()
     breach = g["breach"].to_numpy()
     use = ~breach & np.isfinite(r)
-    r = np.where(use, r, 0.0)
-    return r, r_up, r_lo, g["censored_up"].to_numpy(), g["censored_dn"].to_numpy(), use
+    # Only sanitize genuinely non-finite entries. Breach-day values are left
+    # alone: the variance recursion now handles breach days explicitly (see
+    # garch_variance_path_breach / _latent_nll's e2=s2 branch) rather than by
+    # zeroing the return, so what r holds on a breach day no longer matters.
+    r = np.where(np.isfinite(r), r, 0.0)
+    return r, r_up, r_lo, g["censored_up"].to_numpy(), g["censored_dn"].to_numpy(), use, breach
 
 
 def fit_one(sym, g):
     try:
-        r, r_up, r_lo, up, lo, use = prep(g)
-        n = minimize(naive_nll, X0, args=(r, use), **OPTS)
+        r, r_up, r_lo, up, lo, use, breach = prep(g)
+        n = minimize(naive_nll, X0, args=(r, use, breach), **OPTS)
         starts = [n.x, X0] if _valid(n.x) else [X0]
-        args = (r, r_up, r_lo, up, lo, use)
-        c = min((minimize(censored_nll, s, args=args, **OPTS) for s in starts), key=lambda z: z.fun)
-        L = min((minimize(latent_nll, s, args=args, **OPTS) for s in starts), key=lambda z: z.fun)
+        c_args = (r, r_up, r_lo, up, lo, use, breach)
+        L_args = (r, r_up, r_lo, up, lo, use)
+        c = min((minimize(censored_nll, s, args=c_args, **OPTS) for s in starts), key=lambda z: z.fun)
+        L = min((minimize(latent_nll, s, args=L_args, **OPTS) for s in starts), key=lambda z: z.fun)
         return {
             "symbol": sym, "n": int(use.sum()),
             "censor_rate": float((up | lo)[use].mean()),
@@ -166,7 +205,15 @@ def filtered_symbols():
     uni = pd.read_csv("data/universe.csv")
     pref = set(uni.loc[uni["name"].str.contains("PREF", case=False, na=False), "symbol"])
     pref |= {s for s in summ.symbol if s.endswith(("CPS", "PS"))}
-    keep = summ[~summ.symbol.isin(pref) & (summ.n >= 500) & (summ.zero_vol_share <= 0.20)]
+    # Duplicate-alias tickers: same company's full history served under more
+    # than one historical ticker code (see src/dedupe_aliases.py). Run that
+    # script once after any data refresh; if data/alias_drops.txt doesn't
+    # exist yet, nothing is excluded here and the caller should treat the
+    # sample count as provisional.
+    alias_file = Path("data/alias_drops.txt")
+    aliases = set(alias_file.read_text().split()) if alias_file.exists() else set()
+    keep = summ[~summ.symbol.isin(pref) & ~summ.symbol.isin(aliases)
+                & (summ.n >= 500) & (summ.zero_vol_share <= 0.20)]
     return keep.symbol.tolist()
 
 
