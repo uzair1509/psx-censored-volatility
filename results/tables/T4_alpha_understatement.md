@@ -1,8 +1,8 @@
-| spec | n | gap>0 | sign p | median alpha naive | median alpha latent | median understatement | IQR | Spearman(gap, censoring) |
-|---|---|---|---|---|---|---|---|---|
-| Student-t (main) | 427 | 67.2% | 9.6e-13 | 0.229 | 0.262 | 10.9% | -2.8% to 33.9% | 0.45 |
-| Student-t, strict | 285 | 70.9% | 1.3e-12 | 0.221 | 0.258 | 12.5% | -1.7% to 41.6% | 0.66 |
-| Student-t, all fits | 468 | 69.9% | 4.4e-18 | 0.224 | 0.265 | 13.1% | -2.0% to 46.2% | 0.53 |
-| Normal | 453 | 97.6% | 3.2e-115 | 0.145 | 0.187 | 21.8% | 9.1% to 37.6% | 0.73 |
+| spec | n | gap>0 | sign p | median alpha naive | median alpha latent | median % higher than naive | IQR (% higher than naive) | median % of corrected missed by naive | IQR (% of corrected missed) | Spearman(gap, censoring) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Student-t (main) | 416 | 65.4% | 3.5e-10 | 0.233 | 0.262 | 8.3% | -4.1% to 33.0% | 7.6% | -4.3% to 24.8% | 0.42 |
+| Student-t, strict | 277 | 69.3% | 1.1e-10 | 0.225 | 0.258 | 11.7% | -3.4% to 38.2% | 10.4% | -3.5% to 27.6% | 0.62 |
+| Student-t, all fits | 449 | 67.9% | 2.3e-14 | 0.228 | 0.266 | 11.0% | -3.4% to 43.8% | 9.9% | -3.5% to 30.4% | 0.5 |
+| Normal | 436 | 97.0% | 3.2e-107 | 0.146 | 0.186 | 21.0% | 8.4% to 36.5% | 17.3% | 7.7% to 26.7% | 0.74 |
 
 Median nu (naive t): 4.7. Main spec drops alpha~0 and nu-at-cap fits only.
