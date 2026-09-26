@@ -74,16 +74,26 @@ def t3(panel):
 
 
 # ---------- T4 alpha understatement ----------
+# Two distinct, non-interchangeable ratios. Report both, always labeled:
+#   rel_to_naive  = (latent - naive) / naive   -> "how much higher than naive"
+#   rel_to_latent = (latent - naive) / latent  -> "share of the corrected estimate
+#                                                  that naive is missing" (this is
+#                                                  the number that supports a
+#                                                  "treat naive as understated by X%"
+#                                                  claim; rel_to_naive does not)
 def alpha_row(d, label):
-    rel = d.alpha_gap / d.alpha_n
+    rel_to_naive = d.alpha_gap / d.alpha_n
+    rel_to_latent = d.alpha_gap / d.alpha_l
     k = int((d.alpha_gap > 0).sum())
     rs = spearmanr(d.censor_rate, d.alpha_gap)
     return {"spec": label, "n": len(d), "gap>0": f"{k/len(d):.1%}",
             "sign p": f"{binomtest(k, len(d)).pvalue:.1e}",
             "median alpha naive": round(d.alpha_n.median(), 3),
             "median alpha latent": round(d.alpha_l.median(), 3),
-            "median understatement": f"{rel.median():.1%}",
-            "IQR": f"{rel.quantile(.25):.1%} to {rel.quantile(.75):.1%}",
+            "median % higher than naive": f"{rel_to_naive.median():.1%}",
+            "IQR (% higher than naive)": f"{rel_to_naive.quantile(.25):.1%} to {rel_to_naive.quantile(.75):.1%}",
+            "median % of corrected missed by naive": f"{rel_to_latent.median():.1%}",
+            "IQR (% of corrected missed)": f"{rel_to_latent.quantile(.25):.1%} to {rel_to_latent.quantile(.75):.1%}",
             "Spearman(gap, censoring)": round(rs.statistic, 2)}
 
 
@@ -147,17 +157,31 @@ def t5(panel, syms, refit):
           ("band_2024",    ("2020-03-20", "2024-05-26"), ("2024-07-22", "2026-12-31"))]
     df = pd.DataFrame([did(l, a, b, panel, syms, refit) for l, a, b in ev])
     save(df, "T5_did")
-    # Rambachan-Roth relative-magnitudes bound (single pre-period): theta +/- M*|delta_pre|
+    # NOTE: this is NOT the Rambachan & Roth (2023) honest-DiD procedure. That
+    # method solves a constrained optimization over the full pre/post
+    # covariance structure to produce a valid confidence set under a bound on
+    # how much a post-period violation can exceed the (bounded) pre-period
+    # one. This is a much cruder, purely illustrative deterministic bound --
+    # theta_hat +/- M*|placebo| -- using the 2018 placebo as a stand-in for
+    # "how big a parallel-trends violation looks like here." It is a sanity
+    # check inspired by their relative-magnitudes idea, not their inference
+    # procedure, and should not be cited as implementing Rambachan & Roth
+    # (2023) without that caveat attached.
     pl, ev20 = df.set_index("event").loc["placebo_2018"], df.set_index("event").loc["band_2020"]
     rows = []
     for short in ["cens", "gap"]:
         th, dp = ev20[f"DiD {short}"], abs(pl[f"DiD {short}"])
         rows.append({"outcome": short, "DiD 2020": th, "|placebo|": dp,
-                     "bound M=1 low": th - dp, "bound M=1 high": th + dp,
+                     "illustrative bound M=1 low": th - dp, "illustrative bound M=1 high": th + dp,
                      "breakdown M*": abs(th) / dp if dp > 0 else np.inf})
-    save(pd.DataFrame(rows), "T5b_rambachan_roth",
-         "Relative-magnitudes bound (Rambachan & Roth 2023) using the 2018 placebo as the "
-         "pre-period violation. Effect is robust while the post-period violation is < M* x placebo.")
+    save(pd.DataFrame(rows), "T5b_illustrative_bound",
+         "ILLUSTRATIVE ONLY -- a simple theta +/- M*|placebo| deterministic bound using the "
+         "2018 placebo as a stand-in for a parallel-trends violation, inspired by but NOT "
+         "implementing the Rambachan & Roth (2023) honest-DiD inference procedure (that requires "
+         "a constrained-optimization confidence set over the full covariance structure, not a "
+         "single point-estimate bound). Read this as 'how big would the true bias need to be, "
+         "relative to what a comparable violation looked like in 2018, to erase the effect' -- "
+         "not as a formal confidence interval.")
 
 
 # ---------- T6 Monte Carlo + F1 ----------
@@ -186,11 +210,24 @@ def t6_f1():
 def f2(fn, ft):
     import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
     FIG.mkdir(parents=True, exist_ok=True)
+    # Plot the ABSOLUTE gap (alpha_l - alpha_n), matching the Spearman
+    # correlation reported in T4 (which is spearmanr(censor_rate, alpha_gap),
+    # i.e. computed on the absolute gap). Previously this plotted the
+    # RELATIVE gap (alpha_gap/alpha_n) under the same "understatement" label
+    # as the table's absolute-gap correlation -- two different quantities
+    # presented as if they were the same statistic.
+    y = ft.alpha_gap
+    lo, hi = y.quantile(0.005), y.quantile(0.995)
+    n_clipped = int(((y < lo) | (y > hi)).sum())
     fig, ax = plt.subplots(figsize=(5.5, 3.8))
-    ax.scatter(ft.censor_rate * 100, ft.alpha_gap / ft.alpha_n * 100, s=8, alpha=.6, label="Student-t")
+    ax.scatter(ft.censor_rate * 100, y, s=8, alpha=.6, label="Student-t")
     ax.axhline(0, color="grey", lw=0.8)
-    ax.set_xlabel("censoring rate (%)"); ax.set_ylabel("alpha understatement (%)")
-    ax.set_ylim(-50, 150); ax.legend(frameon=False)
+    ax.set_xlabel("censoring rate (%)"); ax.set_ylabel("alpha gap (latent - naive)")
+    ax.set_ylim(lo, hi)
+    if n_clipped:
+        ax.annotate(f"{n_clipped}/{len(y)} points outside axis range (not shown)",
+                    xy=(0.02, 0.02), xycoords="axes fraction", fontsize=7, color="grey")
+    ax.legend(frameon=False)
     fig.tight_layout(); fig.savefig(FIG / "F2_gap_vs_censoring.png", dpi=200); plt.close(fig)
 
 
