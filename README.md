@@ -48,6 +48,12 @@ pip install mtgarch
 
 PyPI: https://pypi.org/project/mtgarch/
 
+## Data
+
+The raw PSX price data is not included in this repo, and I do not redistribute it. The files in `results/` are my own fitted estimates and summary tables, not PSX data.
+
+To reproduce the results, get the PSX price data yourself under PSX's terms (for a licence, see the PSX Market Data team) and put it in `data/raw/`. `src/build_dataset.py` shows the format the other scripts expect.
+
 ## Code
 
 - `src/band_regimes.py`: the PSX price band rules and the censoring flags.
